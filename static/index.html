@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#b45309">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon-192.png">
+<title>Reel to Trumpet</title>
+<style>
+  :root { --bg:#fffaf0; --ink:#1f1a14; --accent:#b45309; --card:#fff; --muted:#7a6f63; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#17130f; --ink:#f5efe6; --card:#241e18; --muted:#a99d8f; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, sans-serif; background:var(--bg); color:var(--ink); }
+  main { max-width: 640px; margin: 0 auto; padding: 20px 16px 60px; }
+  h1 { font-size: 1.6rem; margin: 8px 0 4px; }
+  p.sub { color: var(--muted); margin: 0 0 20px; }
+  .card { background: var(--card); border-radius: 14px; padding: 16px; margin-bottom: 16px;
+          box-shadow: 0 1px 4px rgba(0,0,0,.12); }
+  input[type=text] { width:100%; padding:12px; font-size:1rem; border-radius:10px;
+          border:1px solid #c9bfb2; background:transparent; color:var(--ink); }
+  button { background: var(--accent); color:#fff; border:0; padding:12px 18px; font-size:1rem;
+           border-radius:10px; margin-top:10px; width:100%; }
+  button.secondary { background: transparent; color: var(--accent); border:1px solid var(--accent); }
+  .hidden { display:none; }
+  .status { text-align:center; padding: 24px 8px; }
+  .spinner { width:34px; height:34px; border:4px solid #d9cdbd; border-top-color:var(--accent);
+             border-radius:50%; animation: spin 1s linear infinite; margin: 0 auto 12px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .error { color:#b91c1c; }
+  .notes { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  .n { background: rgba(180,83,9,.12); border-radius:8px; padding:6px 8px; text-align:center;
+       min-width:56px; font-size:.9rem; }
+  .n small { display:block; color:var(--muted); font-size:.7rem; }
+  #sheet { background:#fff; border-radius:10px; overflow-x:auto; padding:6px; }
+  .meta { color: var(--muted); font-size:.9rem; margin:6px 0 10px; }
+  label.file { display:block; margin-top:12px; color:var(--accent); text-decoration:underline; }
+</style>
+</head>
+<body>
+<main>
+  <h1>🎺 Reel to Trumpet</h1>
+  <p class="sub">Share an Instagram reel here to get trumpet notes.</p>
+
+  <div class="card" id="inputCard">
+    <input id="url" type="text" inputmode="url" placeholder="Paste an Instagram reel link">
+    <button id="go">Get trumpet notes</button>
+    <label class="file">…or upload a screen recording
+      <input id="file" type="file" accept="video/*,audio/*" class="hidden">
+    </label>
+  </div>
+
+  <div class="card status hidden" id="statusCard">
+    <div class="spinner"></div>
+    <div id="statusText">Working on it…</div>
+  </div>
+
+  <div class="card error hidden" id="errorCard"></div>
+
+  <div class="card hidden" id="resultCard">
+    <strong>Trumpet part (B♭, written pitch)</strong>
+    <div class="meta" id="meta"></div>
+    <div id="sheet"></div>
+    <button class="secondary" id="dl">Download MusicXML</button>
+    <h3>Notes &amp; valves</h3>
+    <div class="notes" id="notes"></div>
+  </div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/opensheetmusicdisplay@1.8.9/build/opensheetmusicdisplay.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+let lastXml = "";
+
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js");
+
+// Instagram's Share button sends the link as ?url= or inside ?text=
+const params = new URLSearchParams(location.search);
+const shared = [params.get("url"), params.get("text"), params.get("title")]
+  .filter(Boolean).join(" ");
+const m = shared.match(/https?:\/\/(?:www\.)?instagram\.com\/[^\s]+/i);
+if (m) { $("url").value = m[0]; history.replaceState({}, "", "/"); start({ url: m[0] }); }
+
+$("go").onclick = () => {
+  const v = $("url").value.trim();
+  if (v) start({ url: v });
+};
+$("file").onchange = e => { if (e.target.files[0]) start({ file: e.target.files[0] }); };
+
+function show(which) {
+  for (const id of ["inputCard","statusCard","errorCard","resultCard"])
+    $(id).classList.toggle("hidden", !which.includes(id));
+}
+
+async function start({ url, file }) {
+  show(["statusCard"]);
+  $("statusText").textContent = "Grabbing the audio…";
+  const fd = new FormData();
+  if (url) fd.append("url", url);
+  if (file) fd.append("file", file);
+  try {
+    const r = await fetch("/api/jobs", { method: "POST", body: fd });
+    if (!r.ok) throw new Error((await r.json()).detail || "Request failed");
+    const { id } = await r.json();
+    poll(id);
+  } catch (e) { fail(e.message); }
+}
+
+async function poll(id) {
+  try {
+    const r = await fetch("/api/jobs/" + id);
+    const j = await r.json();
+    if (j.status === "done") return render(j.result);
+    if (j.status === "error") return fail(j.error);
+    $("statusText").textContent =
+      j.status === "queued" ? "Waiting in line…" : "Finding the notes (this can take a minute)…";
+    setTimeout(() => poll(id), 2000);
+  } catch (e) { fail("Lost connection to the server."); }
+}
+
+function fail(msg) {
+  $("errorCard").textContent = msg;
+  show(["inputCard", "errorCard"]);
+}
+
+async function render(res) {
+  lastXml = res.musicxml;
+  $("meta").textContent =
+    `~${res.tempo} BPM · original key: ${res.concert_key} · ${res.note_count} notes`;
+  $("notes").innerHTML = res.notes.map(n =>
+    `<div class="n">${n.name}<small>${n.fingering}</small></div>`).join("");
+  show(["inputCard", "resultCard"]);
+  try {
+    $("sheet").innerHTML = "";
+    const osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay("sheet",
+      { autoResize: true, drawTitle: false });
+    await osmd.load(lastXml);
+    osmd.render();
+  } catch (e) { $("sheet").textContent = "Couldn't draw the staff, but the notes below are ready."; }
+}
+
+$("dl").onclick = () => {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([lastXml], { type: "application/xml" }));
+  a.download = "trumpet-part.musicxml";
+  a.click();
+};
+</script>
+</body>
+</html>

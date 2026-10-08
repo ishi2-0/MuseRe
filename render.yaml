@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: reel-to-trumpet
+    runtime: docker
+    plan: starter   # Basic Pitch needs more than the 512MB free tier; see README
+    healthCheckPath: /
